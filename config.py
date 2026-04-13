@@ -5,11 +5,17 @@ from typing import List, Optional
 
 CONFIG_PATH = Path(__file__).parent / "config.yaml"
 
+
+class ConfigError(Exception):
+    """Raised when the bot configuration is missing or invalid."""
+
+
 @dataclass
 class BotConfig:
     token: str
     admin_ids: List[int]
     group_id: Optional[int] = None
+    configured_group_id: Optional[int] = None
 
 @dataclass
 class ProxyConfig:
@@ -56,15 +62,28 @@ class Config:
     lottery: LotteryConfig = field(default_factory=LotteryConfig)
     backup: BackupConfig = field(default_factory=BackupConfig)
 
-def load_config() -> Config:
-    with open(CONFIG_PATH, 'r', encoding='utf-8') as f:
-        data = yaml.safe_load(f)
+
+def load_config(path: Path = CONFIG_PATH) -> Config:
+    if not path.exists():
+        raise ConfigError(f"配置文件不存在: {path}")
+
+    with path.open('r', encoding='utf-8') as f:
+        data = yaml.safe_load(f) or {}
+
+    if not isinstance(data, dict):
+        raise ConfigError("配置文件格式无效，顶层必须是 YAML 对象")
+    if not isinstance(data.get('bot'), dict):
+        raise ConfigError("缺少 bot 配置段")
+    if not data['bot'].get('token'):
+        raise ConfigError("缺少 bot.token 配置")
+    raw_group_id = data['bot'].get('group_id')
 
     return Config(
         bot=BotConfig(
             token=data['bot']['token'],
             admin_ids=data['bot'].get('admin_ids', []),
-            group_id=data['bot'].get('group_id')
+            group_id=raw_group_id,
+            configured_group_id=raw_group_id,
         ),
         proxy=ProxyConfig(
             enabled=data.get('proxy', {}).get('enabled', False),
@@ -96,5 +115,3 @@ def load_config() -> Config:
             filename=data.get('backup', {}).get('filename', 'points_bot.db')
         )
     )
-
-config = load_config()

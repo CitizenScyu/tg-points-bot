@@ -1,36 +1,38 @@
 # TG 积分机器人示例配置
+# 复制为 config.yaml 后再填写真实值。
+# 不要将包含真实 token、管理员 ID、WebDAV 密码的 config.yaml 提交到仓库。
 
 bot:
-  token: "YOUR_BOT_TOKEN"
+  token: "YOUR_BOT_TOKEN"  # Telegram Bot Token
   admin_ids:
-    - 123456789
-  group_id: null  # 留空则在首个使用的群自动绑定
+    - 123456789          # Bot 超级管理员 Telegram ID，可填写多个
+  group_id: null         # 固定服务群 ID；设为 null 时需管理员在目标群手动绑定
 
 proxy:
-  enabled: false
-  url: "http://127.0.0.1:7891"
+  enabled: false         # 无法直连 Telegram 时改为 true
+  url: "http://127.0.0.1:7891"  # 代理地址，支持 http / socks
 
 checkin:
-  points: 10
+  points: 10             # 每日签到奖励积分
 
 chat:
-  text_min_length: 5
-  text_points: 1
-  sticker_points: 1
-  photo_points: 2
-  daily_limit: 150
-  cooldown_seconds: 10
+  text_min_length: 5     # 文字消息最少长度
+  text_points: 1         # 文字消息积分
+  sticker_points: 1      # 贴纸消息积分
+  photo_points: 2        # 图片消息积分
+  daily_limit: 150       # 每日聊天积分总上限
+  cooldown_seconds: 10   # 聊天积分冷却秒数
 
 rank:
-  top_n: 10
+  top_n: 10              # 排行榜显示人数
 
 lottery:
-  default_min_participants: 1
+  default_min_participants: 1  # 抽奖默认最少参与人数
 
 backup:
-  enabled: false
-  webdav_url: "https://dav.example.com/dav/path"
+  enabled: false                 # 是否启用自动备份
+  webdav_url: "https://dav.example.com/dav/path"  # WebDAV 目录
   username: "your-webdav-username"
-  password: "your-webdav-password"
-  interval_hours: 6
-  filename: "points_bot.db"
+  password: "your-webdav-password"                # 建议使用应用密码
+  interval_hours: 6              # 自动备份间隔小时
+  filename: "points_bot.db"      # 远端最新备份文件名

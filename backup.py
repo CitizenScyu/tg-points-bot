@@ -5,13 +5,12 @@ from datetime import datetime
 from pathlib import Path
 
 import database as db
-from config import config
 from webdav3.client import Client
 
 logger = logging.getLogger(__name__)
 
 
-def get_webdav_client() -> Client:
+def get_webdav_client(config) -> Client:
     """获取 WebDAV 客户端。"""
     options = {
         'webdav_hostname': config.backup.webdav_url,
@@ -27,7 +26,7 @@ def _new_temp_db_path() -> Path:
     return Path(temp_file.name)
 
 
-def backup_to_webdav() -> bool:
+def backup_to_webdav(config) -> bool:
     """备份数据库到 WebDAV。"""
     if not config.backup.enabled:
         return False
@@ -36,7 +35,7 @@ def backup_to_webdav() -> bool:
 
     snapshot_path = _new_temp_db_path()
     try:
-        client = get_webdav_client()
+        client = get_webdav_client(config)
         db.create_database_snapshot(snapshot_path)
 
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
@@ -54,14 +53,14 @@ def backup_to_webdav() -> bool:
             snapshot_path.unlink(missing_ok=True)
 
 
-def restore_from_webdav() -> bool:
+def restore_from_webdav(config) -> bool:
     """从 WebDAV 恢复数据库。"""
     if not config.backup.enabled:
         return False
 
     restore_path = _new_temp_db_path()
     try:
-        client = get_webdav_client()
+        client = get_webdav_client(config)
         client.download(local_path=str(restore_path), remote_path=config.backup.filename)
         db.restore_database_from_file(restore_path)
         return True
@@ -89,7 +88,14 @@ def cleanup_old_backups(client: Client, keep: int = 10) -> None:
 
 
 if __name__ == "__main__":
-    if backup_to_webdav():
-        print("备份成功")
+    from config import ConfigError, load_config
+
+    try:
+        config = load_config()
+    except ConfigError as exc:
+        print(f"配置加载失败: {exc}")
     else:
-        print("备份失败")
+        if backup_to_webdav(config):
+            print("备份成功")
+        else:
+            print("备份失败")

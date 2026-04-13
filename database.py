@@ -10,6 +10,7 @@ from typing import Any, Dict, List, Optional
 DB_PATH = Path(__file__).parent / "data" / "points_bot.db"
 DB_LOCK = threading.RLock()
 BOUND_GROUP_KEY = "bot.group_id"
+LOTTERY_DRAW_MODES = {"manual", "participant_count", "time"}
 
 
 def _today_iso() -> str:
@@ -37,6 +38,10 @@ def _create_users_table(conn: sqlite3.Connection, table_name: str = "users") -> 
         )
         '''
     )
+
+
+def _table_columns(conn: sqlite3.Connection, table_name: str) -> set[str]:
+    return {row["name"] for row in conn.execute(f"PRAGMA table_info({table_name})").fetchall()}
 
 
 def _migrate_users_table(conn: sqlite3.Connection) -> None:
@@ -105,6 +110,39 @@ def _migrate_users_table(conn: sqlite3.Connection) -> None:
     )
     conn.execute("DROP TABLE users_legacy")
 
+
+def _ensure_lotteries_schema(conn: sqlite3.Connection) -> None:
+    tables = {
+        row["name"]
+        for row in conn.execute(
+            "SELECT name FROM sqlite_master WHERE type = 'table'"
+        ).fetchall()
+    }
+    if "lotteries" not in tables:
+        return
+
+    columns = _table_columns(conn, "lotteries")
+    if "draw_mode" not in columns:
+        conn.execute("ALTER TABLE lotteries ADD COLUMN draw_mode TEXT DEFAULT 'manual'")
+        conn.execute(
+            """
+            UPDATE lotteries
+            SET draw_mode = CASE
+                WHEN end_time IS NOT NULL THEN 'time'
+                ELSE 'manual'
+            END
+            WHERE draw_mode IS NULL OR draw_mode = ''
+            """
+        )
+    else:
+        conn.execute(
+            "UPDATE lotteries SET draw_mode = 'manual' WHERE draw_mode IS NULL OR draw_mode = ''"
+        )
+    if "announcement_chat_id" not in columns:
+        conn.execute("ALTER TABLE lotteries ADD COLUMN announcement_chat_id INTEGER")
+    if "announcement_message_id" not in columns:
+        conn.execute("ALTER TABLE lotteries ADD COLUMN announcement_message_id INTEGER")
+
 def init_db():
     """初始化数据库"""
     DB_PATH.parent.mkdir(parents=True, exist_ok=True)
@@ -126,6 +164,9 @@ def init_db():
                 status TEXT DEFAULT 'active',
                 min_participants INTEGER DEFAULT 1,
                 end_time TEXT,
+                draw_mode TEXT DEFAULT 'manual',
+                announcement_chat_id INTEGER,
+                announcement_message_id INTEGER,
                 winner_id INTEGER,
                 created_at TEXT DEFAULT CURRENT_TIMESTAMP,
                 finished_at TEXT
@@ -142,12 +183,14 @@ def init_db():
             "SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'users'"
         ).fetchone() is None:
             _create_users_table(conn)
+        _ensure_lotteries_schema(conn)
 
         conn.executescript('''
             CREATE INDEX IF NOT EXISTS idx_users_user_id ON users(user_id);
             CREATE INDEX IF NOT EXISTS idx_users_group_points ON users(group_id, points DESC);
             CREATE INDEX IF NOT EXISTS idx_lotteries_group ON lotteries(group_id);
             CREATE INDEX IF NOT EXISTS idx_lotteries_status ON lotteries(status);
+            CREATE INDEX IF NOT EXISTS idx_lotteries_due_time ON lotteries(status, draw_mode, end_time);
             CREATE INDEX IF NOT EXISTS idx_lottery_participants_user ON lottery_participants(user_id);
         ''')
 
@@ -240,23 +283,36 @@ def get_or_create_user(user_id: int, group_id: int, username: str = None) -> Dic
 
 def update_user_points(user_id: int, group_id: int, delta: int) -> Optional[int]:
     """更新群内用户积分，返回新积分。"""
-    with get_connection() as conn:
-        result = conn.execute(
-            'UPDATE users SET points = points + ? WHERE group_id = ? AND user_id = ?',
-            (delta, group_id, user_id)
-        )
-        if result.rowcount == 0:
-            return None
+    success, new_points, _ = adjust_user_points(user_id, group_id, delta)
+    return new_points if success else None
 
+
+def adjust_user_points(user_id: int, group_id: int, delta: int) -> tuple[bool, Optional[int], str]:
+    """安全更新群内用户积分，返回 (是否成功, 当前/新积分, 结果码)。"""
+    with get_connection() as conn:
         row = conn.execute(
             'SELECT points FROM users WHERE group_id = ? AND user_id = ?',
             (group_id, user_id)
         ).fetchone()
-        return row['points']
+        if row is None:
+            return False, None, "user_not_found"
+
+        new_points = row['points'] + delta
+        if new_points < 0:
+            return False, row['points'], "insufficient_points"
+
+        conn.execute(
+            'UPDATE users SET points = ? WHERE group_id = ? AND user_id = ?',
+            (new_points, group_id, user_id)
+        )
+        return True, new_points, "ok"
 
 
 def set_user_points(user_id: int, group_id: int, points: int) -> Optional[int]:
     """设置群内用户积分，返回新积分。"""
+    if points < 0:
+        raise ValueError("积分不能小于 0")
+
     with get_connection() as conn:
         result = conn.execute(
             'UPDATE users SET points = ? WHERE group_id = ? AND user_id = ?',
@@ -417,23 +473,128 @@ def add_chat_points(user_id: int, group_id: int, points: int, daily_limit: int) 
 
 # ============ 抽奖相关 ============
 
+def _serialize_lottery(row: Optional[sqlite3.Row]) -> Optional[Dict[str, Any]]:
+    if row is None:
+        return None
+    lottery = dict(row)
+    lottery["draw_mode"] = lottery.get("draw_mode") or "manual"
+    return lottery
+
+
+def _get_lottery_locked(
+    conn: sqlite3.Connection,
+    lottery_id: int,
+    group_id: Optional[int] = None,
+) -> Optional[sqlite3.Row]:
+    if group_id is None:
+        return conn.execute(
+            'SELECT * FROM lotteries WHERE lottery_id = ?',
+            (lottery_id,)
+        ).fetchone()
+    return conn.execute(
+        'SELECT * FROM lotteries WHERE lottery_id = ? AND group_id = ?',
+        (lottery_id, group_id)
+    ).fetchone()
+
+
+def _get_lottery_participants_locked(conn: sqlite3.Connection, lottery_id: int) -> List[int]:
+    return [
+        row['user_id']
+        for row in conn.execute(
+            'SELECT user_id FROM lottery_participants WHERE lottery_id = ?',
+            (lottery_id,)
+        ).fetchall()
+    ]
+
+
+def _get_lottery_participant_count_locked(conn: sqlite3.Connection, lottery_id: int) -> int:
+    row = conn.execute(
+        'SELECT COUNT(*) AS count FROM lottery_participants WHERE lottery_id = ?',
+        (lottery_id,)
+    ).fetchone()
+    return int(row['count']) if row else 0
+
+
+def _refund_lottery_participants_locked(
+    conn: sqlite3.Connection,
+    lottery: sqlite3.Row,
+    participant_ids: List[int],
+) -> None:
+    for participant_id in participant_ids:
+        conn.execute(
+            'UPDATE users SET points = points + ? WHERE group_id = ? AND user_id = ?',
+            (lottery['cost'], lottery['group_id'], participant_id)
+        )
+
+
+def _cancel_lottery_locked(
+    conn: sqlite3.Connection,
+    lottery: sqlite3.Row,
+    *,
+    refund: bool = False,
+    participant_ids: Optional[List[int]] = None,
+) -> None:
+    participants = participant_ids if participant_ids is not None else _get_lottery_participants_locked(
+        conn, lottery['lottery_id']
+    )
+    if refund and participants:
+        _refund_lottery_participants_locked(conn, lottery, participants)
+    conn.execute(
+        "UPDATE lotteries SET status = 'cancelled', finished_at = ? WHERE lottery_id = ?",
+        (_now_iso(), lottery['lottery_id'])
+    )
+
+
+def _finish_lottery_locked(
+    conn: sqlite3.Connection,
+    lottery: sqlite3.Row,
+    winner_id: Optional[int] = None,
+) -> tuple[Optional[int], str, List[int]]:
+    participants = _get_lottery_participants_locked(conn, lottery['lottery_id'])
+
+    if not participants:
+        _cancel_lottery_locked(conn, lottery, refund=False, participant_ids=participants)
+        return None, "cancelled", participants
+
+    if winner_id is not None and winner_id not in participants:
+        raise ValueError("指定中奖者未参与本次抽奖")
+    if winner_id is None:
+        winner_id = random.choice(participants)
+
+    conn.execute(
+        '''
+        UPDATE lotteries
+        SET status = 'finished', winner_id = ?, finished_at = ?
+        WHERE lottery_id = ?
+        ''',
+        (winner_id, _now_iso(), lottery['lottery_id'])
+    )
+    return winner_id, "finished", participants
+
+
 def create_lottery(group_id: int, title: str, prize: str, cost: int,
                    creator_id: int, min_participants: int = 1,
-                   end_time: str = None) -> int:
+                   end_time: str = None, draw_mode: str = "manual") -> int:
     """创建抽奖，返回抽奖ID。"""
     if cost <= 0:
         raise ValueError("参与费必须大于 0")
     if min_participants < 1:
         raise ValueError("最少人数不能小于 1")
+    if draw_mode not in LOTTERY_DRAW_MODES:
+        raise ValueError("不支持的开奖模式")
+    if draw_mode == "time" and not end_time:
+        raise ValueError("按时间开奖必须设置开奖时间")
+    if draw_mode != "time":
+        end_time = None
 
     with get_connection() as conn:
         cursor = conn.execute(
             '''
             INSERT INTO lotteries
-                (group_id, title, prize, cost, creator_id, min_participants, end_time)
-            VALUES (?, ?, ?, ?, ?, ?, ?)
+                (group_id, title, prize, cost, creator_id, min_participants, end_time, draw_mode)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
             ''',
-            (group_id, title, prize, cost, creator_id, min_participants, end_time)
+            (group_id, title, prize, cost, creator_id, min_participants, end_time, draw_mode)
         )
         return cursor.lastrowid
 
@@ -450,56 +611,68 @@ def get_active_lotteries(group_id: int) -> List[Dict[str, Any]]:
             ''',
             (group_id,)
         ).fetchall()
-        return [dict(row) for row in rows]
+        return [_serialize_lottery(row) for row in rows]
 
 
 def get_lottery(lottery_id: int, group_id: Optional[int] = None) -> Optional[Dict[str, Any]]:
     """获取抽奖详情。"""
     with get_connection() as conn:
-        if group_id is None:
-            row = conn.execute(
-                'SELECT * FROM lotteries WHERE lottery_id = ?',
-                (lottery_id,)
-            ).fetchone()
-        else:
-            row = conn.execute(
-                'SELECT * FROM lotteries WHERE lottery_id = ? AND group_id = ?',
-                (lottery_id, group_id)
-            ).fetchone()
-        return dict(row) if row else None
+        row = _get_lottery_locked(conn, lottery_id, group_id)
+        return _serialize_lottery(row)
+
+
+def set_lottery_announcement_message(
+    lottery_id: int,
+    group_id: int,
+    chat_id: int,
+    message_id: int,
+) -> bool:
+    with get_connection() as conn:
+        result = conn.execute(
+            '''
+            UPDATE lotteries
+            SET announcement_chat_id = ?, announcement_message_id = ?
+            WHERE lottery_id = ? AND group_id = ?
+            ''',
+            (chat_id, message_id, lottery_id, group_id)
+        )
+        return result.rowcount > 0
 
 
 def join_lottery(lottery_id: int, group_id: int, user_id: int) -> tuple[bool, str]:
     """参与抽奖，返回 (成功, 消息)。"""
+    result = join_lottery_with_result(lottery_id, group_id, user_id)
+    return result["success"], result["message"]
+
+
+def join_lottery_with_result(lottery_id: int, group_id: int, user_id: int) -> Dict[str, Any]:
+    """参与抽奖并返回详细结果。"""
     with get_connection() as conn:
-        lottery = conn.execute(
-            'SELECT * FROM lotteries WHERE lottery_id = ?',
-            (lottery_id,)
-        ).fetchone()
+        lottery = _get_lottery_locked(conn, lottery_id)
         if not lottery:
-            return False, "抽奖不存在"
+            return {"success": False, "message": "抽奖不存在"}
         if lottery['group_id'] != group_id:
-            return False, "请在创建抽奖的群组中参与"
+            return {"success": False, "message": "请在创建抽奖的群组中参与"}
         if lottery['status'] != 'active':
-            return False, "抽奖已结束"
+            return {"success": False, "message": "抽奖已结束"}
         if lottery['cost'] <= 0:
-            return False, "抽奖配置无效，请联系管理员"
+            return {"success": False, "message": "抽奖配置无效，请联系管理员"}
 
         existing = conn.execute(
             'SELECT 1 FROM lottery_participants WHERE lottery_id = ? AND user_id = ?',
             (lottery_id, user_id)
         ).fetchone()
         if existing:
-            return False, "已参与此抽奖"
+            return {"success": False, "message": "已参与此抽奖"}
 
         user = conn.execute(
             'SELECT points FROM users WHERE group_id = ? AND user_id = ?',
             (group_id, user_id)
         ).fetchone()
         if not user:
-            return False, "用户不存在"
+            return {"success": False, "message": "用户不存在"}
         if user['points'] < lottery['cost']:
-            return False, f"积分不足，需要 {lottery['cost']} 积分"
+            return {"success": False, "message": f"积分不足，需要 {lottery['cost']} 积分"}
 
         conn.execute(
             'UPDATE users SET points = points - ? WHERE group_id = ? AND user_id = ?',
@@ -509,79 +682,112 @@ def join_lottery(lottery_id: int, group_id: int, user_id: int) -> tuple[bool, st
             'INSERT INTO lottery_participants (lottery_id, user_id) VALUES (?, ?)',
             (lottery_id, user_id)
         )
-        return True, "参与成功"
+
+        participant_count = _get_lottery_participant_count_locked(conn, lottery_id)
+        winner_id = None
+        auto_finished = False
+        settlement = "active"
+
+        if (lottery['draw_mode'] or "manual") == "participant_count" and participant_count >= lottery['min_participants']:
+            winner_id, settlement, _ = _finish_lottery_locked(conn, lottery)
+            auto_finished = settlement == "finished"
+
+        updated_lottery = _serialize_lottery(_get_lottery_locked(conn, lottery_id))
+        return {
+            "success": True,
+            "message": "参与成功",
+            "participant_count": participant_count,
+            "lottery": updated_lottery,
+            "winner_id": winner_id,
+            "auto_finished": auto_finished,
+            "settlement": settlement,
+        }
 
 def get_lottery_participants(lottery_id: int) -> List[int]:
     """获取抽奖参与者列表"""
     with get_connection() as conn:
+        return _get_lottery_participants_locked(conn, lottery_id)
+
+
+def get_lottery_participant_count(lottery_id: int) -> int:
+    with get_connection() as conn:
+        return _get_lottery_participant_count_locked(conn, lottery_id)
+
+
+def get_due_time_lotteries(now_iso: Optional[str] = None) -> List[Dict[str, Any]]:
+    """获取已到期开奖时间的抽奖。"""
+    current_time = now_iso or _now_iso()
+    with get_connection() as conn:
         rows = conn.execute(
-            'SELECT user_id FROM lottery_participants WHERE lottery_id = ?',
-            (lottery_id,)
+            '''
+            SELECT *
+            FROM lotteries
+            WHERE status = 'active'
+              AND draw_mode = 'time'
+              AND end_time IS NOT NULL
+              AND end_time <= ?
+            ORDER BY end_time ASC, created_at ASC
+            ''',
+            (current_time,)
         ).fetchall()
-        return [row['user_id'] for row in rows]
+        return [_serialize_lottery(row) for row in rows]
 
 def finish_lottery(lottery_id: int, group_id: int, winner_id: int = None) -> Optional[int]:
     """结束抽奖，返回中奖者ID。"""
     with get_connection() as conn:
-        lottery = conn.execute(
-            'SELECT * FROM lotteries WHERE lottery_id = ? AND group_id = ?',
-            (lottery_id, group_id)
-        ).fetchone()
+        lottery = _get_lottery_locked(conn, lottery_id, group_id)
         if not lottery or lottery['status'] != 'active':
             return None
 
-        participants = [row['user_id'] for row in conn.execute(
-            'SELECT user_id FROM lottery_participants WHERE lottery_id = ?',
-            (lottery_id,)
-        ).fetchall()]
-
-        if not participants:
-            conn.execute(
-                "UPDATE lotteries SET status = 'cancelled', finished_at = ? WHERE lottery_id = ?",
-                (_now_iso(), lottery_id)
-            )
-            return None
-
-        if winner_id is not None and winner_id not in participants:
-            raise ValueError("指定中奖者未参与本次抽奖")
-        if winner_id is None:
-            winner_id = random.choice(participants)
-
-        conn.execute(
-            '''
-            UPDATE lotteries
-            SET status = 'finished', winner_id = ?, finished_at = ?
-            WHERE lottery_id = ?
-            ''',
-            (winner_id, _now_iso(), lottery_id)
-        )
+        winner_id, _, _ = _finish_lottery_locked(conn, lottery, winner_id)
         return winner_id
+
+
+def settle_due_time_lottery(lottery_id: int, group_id: int) -> Dict[str, Any]:
+    """结算到期的按时间开奖抽奖。"""
+    with get_connection() as conn:
+        lottery = _get_lottery_locked(conn, lottery_id, group_id)
+        if not lottery or lottery['status'] != 'active' or (lottery['draw_mode'] or "manual") != 'time':
+            return {"status": "ignored"}
+
+        participants = _get_lottery_participants_locked(conn, lottery_id)
+        participant_count = len(participants)
+
+        if participant_count < lottery['min_participants']:
+            _cancel_lottery_locked(
+                conn,
+                lottery,
+                refund=participant_count > 0,
+                participant_ids=participants,
+            )
+            updated_lottery = _serialize_lottery(_get_lottery_locked(conn, lottery_id, group_id))
+            return {
+                "status": "cancelled",
+                "reason": "insufficient_participants" if participant_count else "no_participants",
+                "participant_count": participant_count,
+                "winner_id": None,
+                "lottery": updated_lottery,
+            }
+
+        winner_id, status, _ = _finish_lottery_locked(conn, lottery)
+        updated_lottery = _serialize_lottery(_get_lottery_locked(conn, lottery_id, group_id))
+        return {
+            "status": status,
+            "reason": "time_reached",
+            "participant_count": participant_count,
+            "winner_id": winner_id,
+            "lottery": updated_lottery,
+        }
 
 
 def cancel_lottery(lottery_id: int, group_id: int) -> bool:
     """取消抽奖并退还积分。"""
     with get_connection() as conn:
-        lottery = conn.execute(
-            'SELECT * FROM lotteries WHERE lottery_id = ? AND group_id = ?',
-            (lottery_id, group_id)
-        ).fetchone()
+        lottery = _get_lottery_locked(conn, lottery_id, group_id)
         if not lottery or lottery['status'] != 'active':
             return False
 
-        participants = conn.execute(
-            'SELECT user_id FROM lottery_participants WHERE lottery_id = ?',
-            (lottery_id,)
-        ).fetchall()
-        for participant in participants:
-            conn.execute(
-                'UPDATE users SET points = points + ? WHERE group_id = ? AND user_id = ?',
-                (lottery['cost'], group_id, participant['user_id'])
-            )
-
-        conn.execute(
-            "UPDATE lotteries SET status = 'cancelled', finished_at = ? WHERE lottery_id = ?",
-            (_now_iso(), lottery_id)
-        )
+        _cancel_lottery_locked(conn, lottery, refund=True)
         return True
 
 # ============ 配置相关 ============
@@ -610,8 +816,12 @@ def get_bound_group_id() -> Optional[int]:
     return int(value) if value is not None else None
 
 
-def set_bound_group_id(group_id: int) -> None:
-    set_config_value(BOUND_GROUP_KEY, int(group_id))
+def set_bound_group_id(group_id: Optional[int]) -> None:
+    set_config_value(BOUND_GROUP_KEY, int(group_id) if group_id is not None else None)
+
+
+def clear_bound_group_id() -> None:
+    set_bound_group_id(None)
 
 
 def create_database_snapshot(target_path: Path) -> Path:

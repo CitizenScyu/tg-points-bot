@@ -1,26 +1,16 @@
 from aiogram import F
+from aiogram.filters import Command
 from aiogram.types import Message
 from datetime import date
 import database as db
 import logging
-import asyncio
 from .common import ensure_points_group
+from .utils import schedule_auto_delete
 
 logger = logging.getLogger(__name__)
 
-async def auto_delete(message: Message, reply_msg: Message, delay: int = 30):
-    """自动删除触发消息和机器人回复"""
-    await asyncio.sleep(delay)
-    try:
-        await message.delete()
-        await reply_msg.delete()
-    except:
-        pass  # 忽略删除失败（权限不足或消息已删除）
-
 def register_checkin_handlers(dp, config):
-    # 签到 - 直接汉字触发
-    @dp.message(F.text == "签到")
-    async def cmd_checkin(message: Message):
+    async def handle_checkin(message: Message):
         logger.info(f"签到触发: user={message.from_user.id}, text={message.text}")
         group_id = await ensure_points_group(message, config)
         if group_id is None:
@@ -40,12 +30,17 @@ def register_checkin_handlers(dp, config):
         else:
             reply_msg = await message.reply("今天已经签到过了，明天再来吧~")
 
-        # 30秒后自动删除用户消息和机器人回复
-        asyncio.create_task(auto_delete(message, reply_msg, delay=30))
+        schedule_auto_delete(message, reply_msg, delay=30)
 
-    # 我的签到 - 直接汉字触发
-    @dp.message(F.text == "我的签到")
-    async def cmd_my_checkin(message: Message):
+    @dp.message(F.text == "签到")
+    async def cmd_checkin_text(message: Message):
+        await handle_checkin(message)
+
+    @dp.message(Command("checkin"))
+    async def cmd_checkin_slash(message: Message):
+        await handle_checkin(message)
+
+    async def handle_my_checkin(message: Message):
         group_id = await ensure_points_group(message, config)
         if group_id is None:
             return
@@ -69,5 +64,12 @@ def register_checkin_handlers(dp, config):
             f"积分：{user['points']}\n{status}"
         )
 
-        # 30秒后自动删除用户消息和机器人回复
-        asyncio.create_task(auto_delete(message, reply_msg, delay=30))
+        schedule_auto_delete(message, reply_msg, delay=30)
+
+    @dp.message(F.text == "我的签到")
+    async def cmd_my_checkin_text(message: Message):
+        await handle_my_checkin(message)
+
+    @dp.message(Command("my_checkin"))
+    async def cmd_my_checkin_slash(message: Message):
+        await handle_my_checkin(message)

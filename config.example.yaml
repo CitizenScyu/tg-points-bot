@@ -20,6 +20,7 @@ chat:
   text_points: 1         # 文字消息积分
   sticker_points: 1      # 贴纸消息积分
   photo_points: 2        # 图片消息积分
+  video_points: 3        # 视频消息积分
   daily_limit: 150       # 每日聊天积分总上限
   cooldown_seconds: 10   # 聊天积分冷却秒数
 

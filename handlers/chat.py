@@ -104,3 +104,29 @@ def register_chat_handlers(dp, config):
 
         if can_earn:
             db.add_chat_points(user_id, group_id, config.chat.photo_points, config.chat.daily_limit)
+
+    @dp.message(F.video, F.chat.type.in_({"group", "supergroup"}))
+    async def handle_video(message: Message):
+        group_id = await ensure_points_group(
+            message,
+            config,
+            reply_on_private=False,
+            reply_on_mismatch=False,
+        )
+        if group_id is None:
+            return
+
+        user_id = message.from_user.id
+        username = message.from_user.username or message.from_user.full_name
+
+        db.get_or_create_user(user_id, group_id, username)
+
+        can_earn, reason = db.can_earn_chat_points(
+            user_id,
+            group_id,
+            config.chat.cooldown_seconds,
+            config.chat.daily_limit
+        )
+
+        if can_earn:
+            db.add_chat_points(user_id, group_id, config.chat.video_points, config.chat.daily_limit)

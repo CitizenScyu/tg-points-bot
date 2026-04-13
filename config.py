@@ -32,6 +32,7 @@ class ChatConfig:
     text_points: int = 1
     sticker_points: int = 1
     photo_points: int = 2
+    video_points: int = 3
     daily_limit: int = 150
     cooldown_seconds: int = 10
 
@@ -97,6 +98,7 @@ def load_config(path: Path = CONFIG_PATH) -> Config:
             text_points=data.get('chat', {}).get('text_points', 1),
             sticker_points=data.get('chat', {}).get('sticker_points', 1),
             photo_points=data.get('chat', {}).get('photo_points', 2),
+            video_points=data.get('chat', {}).get('video_points', 3),
             daily_limit=data.get('chat', {}).get('daily_limit', 150),
             cooldown_seconds=data.get('chat', {}).get('cooldown_seconds', 10)
         ),

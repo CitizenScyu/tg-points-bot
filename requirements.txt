@@ -1,0 +1,6 @@
+aiohttp>=3.9.0
+aiogram>=3.4.0
+pyyaml>=6.0
+webdavclient3>=3.6
+apscheduler>=3.10.0
+aiohttp-socks>=0.8.0

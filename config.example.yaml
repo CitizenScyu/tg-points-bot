@@ -1,0 +1,36 @@
+# TG 积分机器人示例配置
+
+bot:
+  token: "YOUR_BOT_TOKEN"
+  admin_ids:
+    - 123456789
+  group_id: null  # 留空则在首个使用的群自动绑定
+
+proxy:
+  enabled: false
+  url: "http://127.0.0.1:7891"
+
+checkin:
+  points: 10
+
+chat:
+  text_min_length: 5
+  text_points: 1
+  sticker_points: 1
+  photo_points: 2
+  daily_limit: 150
+  cooldown_seconds: 10
+
+rank:
+  top_n: 10
+
+lottery:
+  default_min_participants: 1
+
+backup:
+  enabled: false
+  webdav_url: "https://dav.example.com/dav/path"
+  username: "your-webdav-username"
+  password: "your-webdav-password"
+  interval_hours: 6
+  filename: "points_bot.db"

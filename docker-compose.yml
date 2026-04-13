@@ -1,0 +1,17 @@
+version: '3.8'
+
+services:
+  tg-points-bot:
+    build: .
+    container_name: tg-points-bot
+    restart: unless-stopped
+    volumes:
+      - ./data:/app/data
+      - ./config.yaml:/app/config.yaml:ro
+    environment:
+      - TZ=Asia/Shanghai
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"

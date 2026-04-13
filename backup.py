@@ -1,9 +1,8 @@
 """WebDAV 备份模块"""
 import atexit
 import logging
-import os
 import tempfile
-from datetime import datetime, timezone
+from datetime import datetime
 from pathlib import Path
 from typing import Set
 
@@ -73,7 +72,7 @@ def backup_to_webdav(config) -> bool:
         client = get_webdav_client(config)
         db.create_database_snapshot(snapshot_path)
 
-        timestamp = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S")
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
         remote_path = f"points_bot_{timestamp}.db"
 
         client.upload(remote_path=remote_path, local_path=str(snapshot_path))

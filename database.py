@@ -3,7 +3,7 @@ import random
 import sqlite3
 import threading
 from contextlib import contextmanager
-from datetime import date, datetime, timezone
+from datetime import date, datetime
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
@@ -12,32 +12,15 @@ DB_LOCK = threading.RLock()
 BOUND_GROUP_KEY = "bot.group_id"
 LOTTERY_DRAW_MODES = {"manual", "participant_count", "time"}
 
-# 时区配置：北京时间 UTC+8
-BOT_TIMEZONE = timezone.utc  # 使用 UTC 存储，显示时转换
-
 
 def _today_iso() -> str:
-    """返回当前 UTC 日期的 ISO 格式。"""
+    """返回当前日期的 ISO 格式。"""
     return date.today().isoformat()
 
 
 def _now_iso() -> str:
-    """返回当前 UTC 时间的 ISO 格式（带时区）。"""
-    return datetime.now(BOT_TIMEZONE).isoformat()
-
-
-def _parse_iso_datetime(iso_str: str) -> datetime:
-    """解析 ISO 格式时间字符串，返回时区感知的 datetime。"""
-    try:
-        # 尝试解析带时区的时间
-        dt = datetime.fromisoformat(iso_str)
-        if dt.tzinfo is None:
-            # 如果没有时区，假定为 UTC
-            dt = dt.replace(tzinfo=BOT_TIMEZONE)
-        return dt
-    except ValueError:
-        # 兼容旧数据
-        return datetime.fromisoformat(iso_str).replace(tzinfo=BOT_TIMEZONE)
+    """返回当前时间的 ISO 格式。"""
+    return datetime.now().isoformat()
 
 
 def _create_users_table(conn: sqlite3.Connection, table_name: str = "users") -> None:
@@ -423,7 +406,7 @@ def can_earn_chat_points(
         if not row:
             return True, "ok"
 
-        now = datetime.now(BOT_TIMEZONE)
+        now = datetime.now()
         today = _today_iso()
         daily_used = row['daily_chat_points'] if row['last_chat_date'] == today else 0
 
@@ -432,7 +415,7 @@ def can_earn_chat_points(
 
         if row['last_chat_time']:
             try:
-                last_chat = _parse_iso_datetime(row['last_chat_time'])
+                last_chat = datetime.fromisoformat(row['last_chat_time'])
             except ValueError:
                 last_chat = None
             if last_chat is not None:

@@ -1,6 +1,6 @@
 # TG 积分机器人
 
-Telegram 群组积分系统，支持签到、聊天积分、排行榜、抽奖功能，部署于 Phoenix VPS。
+Telegram 群组积分系统，支持签到、聊天积分、排行榜、抽奖功能，支持 Docker 部署。
 
 首次部署时，请基于 `config.example.yaml` 准备本地 `config.yaml`。
 

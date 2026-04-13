@@ -166,6 +166,7 @@ docker compose logs -f
 | `text_points` | int | 文字消息积分 |
 | `sticker_points` | int | 贴纸消息积分 |
 | `photo_points` | int | 图片消息积分 |
+| `video_points` | int | 视频消息积分 |
 | `daily_limit` | int | 每日聊天积分总上限 |
 | `cooldown_seconds` | int | 聊天积分冷却秒数 |
 

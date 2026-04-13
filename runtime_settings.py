@@ -65,6 +65,15 @@ SETTING_DEFINITIONS: List[SettingDefinition] = [
         prompt_hint="请输入新的图片积分，允许 0-100000",
     ),
     SettingDefinition(
+        key="chat.video_points",
+        section="chat",
+        attr="video_points",
+        label="视频积分",
+        min_value=0,
+        max_value=100000,
+        prompt_hint="请输入新的视频积分，允许 0-100000",
+    ),
+    SettingDefinition(
         key="chat.daily_limit",
         section="chat",
         attr="daily_limit",
@@ -109,9 +118,9 @@ SETTINGS_BY_KEY: Dict[str, SettingDefinition] = {
 SETTINGS_BUTTON_ROWS: List[List[str]] = [
     ["checkin.points", "chat.text_min_length"],
     ["chat.text_points", "chat.sticker_points"],
-    ["chat.photo_points", "chat.daily_limit"],
-    ["chat.cooldown_seconds", "rank.top_n"],
-    ["lottery.default_min_participants"],
+    ["chat.photo_points", "chat.video_points"],
+    ["chat.daily_limit", "chat.cooldown_seconds"],
+    ["rank.top_n", "lottery.default_min_participants"],
 ]
 
 

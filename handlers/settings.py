@@ -66,6 +66,7 @@ def _build_settings_text(config, user_id: Optional[int] = None) -> str:
         f"- 文字积分：{config.chat.text_points}",
         f"- 贴纸积分：{config.chat.sticker_points}",
         f"- 图片积分：{config.chat.photo_points}",
+        f"- 视频积分：{config.chat.video_points}",
         f"- 每日聊天积分上限：{config.chat.daily_limit}",
         f"- 聊天积分冷却秒数：{config.chat.cooldown_seconds}",
         "",

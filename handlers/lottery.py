@@ -1,5 +1,5 @@
 import logging
-from datetime import datetime
+from datetime import datetime, timezone
 from html import escape
 from typing import Dict, Optional
 
@@ -12,6 +12,14 @@ from .common import ensure_points_group, has_group_management_rights, is_bot_adm
 from .utils import schedule_auto_delete
 
 logger = logging.getLogger(__name__)
+
+# 使用 UTC 时区
+BOT_TIMEZONE = timezone.utc
+
+# 输入长度限制
+MAX_TITLE_LENGTH = 100
+MAX_PRIZE_LENGTH = 200
+MAX_REASON_LENGTH = 500
 
 JOIN_CALLBACK_PREFIX = "lottery_join:"
 TIME_INPUT_FORMATS = (
@@ -44,10 +52,17 @@ def _build_lottery_list_markup(lotteries: list[dict]) -> InlineKeyboardMarkup:
 
 
 def _parse_datetime_input(raw_value: str) -> datetime:
+    """解析用户输入的时间，返回时区感知的 datetime。"""
     value = raw_value.strip()
     for fmt in TIME_INPUT_FORMATS:
         try:
-            return datetime.strptime(value, fmt)
+            # 解析用户输入（假定为北京时间 UTC+8）
+            dt = datetime.strptime(value, fmt)
+            # 转换为 UTC 时间存储
+            from datetime import timedelta
+            beijing_tz = timezone(timedelta(hours=8))
+            dt = dt.replace(tzinfo=beijing_tz).astimezone(BOT_TIMEZONE)
+            return dt
         except ValueError:
             continue
     raise ValueError("时间格式错误，请使用 YYYY-MM-DD HH:MM")
@@ -91,7 +106,9 @@ def _parse_draw_rule(
         if not payload:
             raise ValueError("按时间开奖请使用 时间:YYYY-MM-DD HH:MM")
         draw_time = _parse_datetime_input(payload)
-        if draw_time <= datetime.now():
+        # 使用 UTC 时间比较
+        now = datetime.now(BOT_TIMEZONE)
+        if draw_time <= now:
             raise ValueError("开奖时间必须晚于当前时间")
         min_participants = int(extra_value) if extra_value else default_min_participants
         return "time", min_participants, draw_time.isoformat(timespec="seconds")
@@ -472,12 +489,22 @@ def register_lottery_handlers(dp, config):
             cost = int(parts[2])
             draw_spec = parts[3] if len(parts) > 3 else ""
             extra_spec = parts[4] if len(parts) > 4 else None
-            draw_mode, min_participants, end_time = _parse_draw_rule(draw_spec, extra_spec, config)
 
+            # 输入验证
             if not title:
                 raise ValueError("标题不能为空")
+            if len(title) > MAX_TITLE_LENGTH:
+                raise ValueError(f"标题长度不能超过 {MAX_TITLE_LENGTH} 字符")
+
             if not prize:
                 raise ValueError("奖品不能为空")
+            if len(prize) > MAX_PRIZE_LENGTH:
+                raise ValueError(f"奖品长度不能超过 {MAX_PRIZE_LENGTH} 字符")
+
+            if cost <= 0:
+                raise ValueError("参与费必须大于 0")
+
+            draw_mode, min_participants, end_time = _parse_draw_rule(draw_spec, extra_spec, config)
 
             lottery_id = db.create_lottery(
                 group_id=group_id,

@@ -77,7 +77,18 @@ def load_config(path: Path = CONFIG_PATH) -> Config:
         raise ConfigError("缺少 bot 配置段")
     if not data['bot'].get('token'):
         raise ConfigError("缺少 bot.token 配置")
+
+    # 验证配置
+    admin_ids = data['bot'].get('admin_ids', [])
+    if not isinstance(admin_ids, list):
+        raise ConfigError("bot.admin_ids 必须是列表")
+    for admin_id in admin_ids:
+        if not isinstance(admin_id, int) or admin_id <= 0:
+            raise ConfigError(f"无效的管理员 ID: {admin_id}")
+
     raw_group_id = data['bot'].get('group_id')
+    if raw_group_id is not None and (not isinstance(raw_group_id, int) or raw_group_id >= 0):
+        raise ConfigError("bot.group_id 必须为 null 或负数（Telegram 群组 ID 为负数）")
 
     return Config(
         bot=BotConfig(

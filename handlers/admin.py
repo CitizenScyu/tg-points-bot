@@ -1,4 +1,5 @@
 import asyncio
+import logging
 
 from aiogram import F
 from aiogram.filters import Command
@@ -14,6 +15,8 @@ from .common import (
     has_group_management_rights,
     is_bot_admin,
 )
+
+logger = logging.getLogger(__name__)
 
 def register_admin_handlers(dp, config):
     @dp.message(F.text.regexp(r"^/(bind_group|绑定群组)(?:@\w+)?$"))
@@ -43,6 +46,7 @@ def register_admin_handlers(dp, config):
         previous_group_id = current_bound_group_id
         bind_group(config, message.chat.id)
         await sync_bot_commands(message.bot, config, previous_bound_group_id=previous_group_id)
+        logger.info("群组绑定: admin=%d group=%d previous=%s", user_id, message.chat.id, previous_group_id)
         await message.reply("群组绑定成功")
 
     @dp.message(F.text.regexp(r"^/(unbind_group|解绑群组)(?:@\w+)?$"))
@@ -105,6 +109,8 @@ def register_admin_handlers(dp, config):
         if not success:
             await message.reply("目标用户还没有在当前群组建立积分记录")
             return
+        logger.info("增加积分: admin=%d target=%d group=%d points=%d new_total=%d",
+                    user_id, target_id, group_id, points, new_points)
         await message.reply(f"已为用户 {target_id} 增加 {points} 积分，当前积分：{new_points}")
 
     @dp.message(Command("sub_points", "扣积分"))
@@ -141,6 +147,8 @@ def register_admin_handlers(dp, config):
         if not success and code == "insufficient_points":
             await message.reply(f"目标用户积分不足，当前仅有 {new_points} 积分")
             return
+        logger.info("扣除积分: admin=%d target=%d group=%d points=%d new_total=%d",
+                    user_id, target_id, group_id, points, new_points)
         await message.reply(f"已为用户 {target_id} 扣除 {points} 积分，当前积分：{new_points}")
 
     @dp.message(Command("set_points", "设积分"))
@@ -174,6 +182,7 @@ def register_admin_handlers(dp, config):
         if new_points is None:
             await message.reply("目标用户还没有在当前群组建立积分记录")
             return
+        logger.info("设置积分: admin=%d target=%d group=%d points=%d", user_id, target_id, group_id, new_points)
         await message.reply(f"已将用户 {target_id} 在当前群组的积分设置为 {new_points}")
 
     @dp.message(Command("backup", "备份"))
@@ -185,11 +194,13 @@ def register_admin_handlers(dp, config):
 
         try:
             from backup import backup_to_webdav
+            logger.info("手动备份: admin=%d", user_id)
             if await asyncio.to_thread(backup_to_webdav, config):
                 await message.reply("备份成功")
             else:
                 await message.reply("备份失败")
         except Exception as e:
+            logger.exception("备份失败: admin=%d", user_id)
             await message.reply(f"备份出错：{str(e)}")
 
     @dp.message(Command("restore", "恢复"))
@@ -201,11 +212,13 @@ def register_admin_handlers(dp, config):
 
         try:
             from backup import restore_from_webdav
+            logger.info("手动恢复: admin=%d", user_id)
             if await asyncio.to_thread(restore_from_webdav, config):
                 await message.reply("恢复成功")
             else:
                 await message.reply("恢复失败")
         except Exception as e:
+            logger.exception("恢复失败: admin=%d", user_id)
             await message.reply(f"恢复出错：{str(e)}")
 
     @dp.message(Command("help", "帮助"))
